@@ -1,11 +1,27 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  await Firebase.initializeApp(
+    options: const FirebaseOptions(
+      apiKey: "AIzaSyAL-v5HQ3h7lPEatfN-BN7slx8QY--6Wnw",
+      authDomain: "maturitnipomocnik.firebaseapp.com",
+      projectId: "maturitnipomocnik",
+      storageBucket: "maturitnipomocnik.firebasestorage.app",
+      messagingSenderId: "639618148005",
+      appId: "1:639618148005:web:7134be3c4a83fc60a1cf4c",
+      measurementId: "G-LRNYZSHC6R",
+    ),
+  );
+
   runApp(const MaturitniApp());
 }
 
-// 1. DATOVÝ MODEL
+// --- DATOVÝ MODEL ---
 class Otazka {
   String id;
   int cislo;
@@ -13,6 +29,7 @@ class Otazka {
   String popis;
   int progres; 
   String predmet;
+  DateTime? posledniUprava; // NOVÉ POLE
 
   Otazka({
     required this.id,
@@ -21,7 +38,21 @@ class Otazka {
     this.popis = '',
     this.progres = 0, 
     required this.predmet,
+    this.posledniUprava,
   });
+
+  factory Otazka.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    return Otazka(
+      id: doc.id,
+      cislo: data['cislo'] ?? 0,
+      nazev: data['nazev'] ?? '',
+      popis: data['popis'] ?? '',
+      progres: data['progres'] ?? 0,
+      predmet: data['predmet'] ?? '',
+      posledniUprava: (data['lastUpdate'] as Timestamp?)?.toDate(), // PŘEVOD Z FIREBASE
+    );
+  }
 }
 
 class MaturitniApp extends StatefulWidget {
@@ -34,9 +65,32 @@ class MaturitniApp extends StatefulWidget {
 class _MaturitniAppState extends State<MaturitniApp> {
   ThemeMode _themeMode = ThemeMode.light;
 
-  void _toggleTheme() {
+  @override
+  void initState() {
+    super.initState();
+    _nactiNastaveni();
+  }
+
+  void _nactiNastaveni() async {
+    try {
+      var doc = await FirebaseFirestore.instance.collection('nastaveni').doc('uzivatel_1').get();
+      if (doc.exists && doc.data() != null) {
+        bool isDark = doc.data()!['darkMode'] ?? false;
+        setState(() {
+          _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
+        });
+      }
+    } catch (e) {
+      print("Nastavení zatím v DB není: $e");
+    }
+  }
+
+  void _toggleTheme() async {
     setState(() {
       _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    });
+    await FirebaseFirestore.instance.collection('nastaveni').doc('uzivatel_1').set({
+      'darkMode': _themeMode == ThemeMode.dark,
     });
   }
 
@@ -52,7 +106,7 @@ class _MaturitniAppState extends State<MaturitniApp> {
   }
 }
 
-// --- HLAVNÍ MENU S ODPOČTEM ---
+// --- HLAVNÍ MENU ---
 class MenuObrazovka extends StatefulWidget {
   final VoidCallback onThemeToggle;
   final bool isDarkMode;
@@ -64,15 +118,12 @@ class MenuObrazovka extends StatefulWidget {
 }
 
 class _MenuObrazovkaState extends State<MenuObrazovka> {
-  late List<Otazka> vsechnyOtazky;
   late Timer _timer;
-  DateTime maturitaDatum = DateTime(2026, 5, 25, 8, 0); // 25.5.2026 v 8:00
+  DateTime maturitaDatum = DateTime(2026, 5, 25, 8, 0);
 
   @override
   void initState() {
     super.initState();
-    vsechnyOtazky = _generujOtazky();
-    // Aktualizace odpočtu každou minutu
     _timer = Timer.periodic(const Duration(minutes: 1), (timer) => setState(() {}));
   }
 
@@ -80,17 +131,6 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
   void dispose() {
     _timer.cancel();
     super.dispose();
-  }
-
-  List<Otazka> _generujOtazky() {
-    List<Otazka> list = [];
-    Map<String, int> limity = {'ČJ': 25, 'IT': 25, 'EKO': 20};
-    limity.forEach((predmet, max) {
-      for (int i = 1; i <= max; i++) {
-        list.add(Otazka(id: '$predmet-$i', cislo: i, nazev: 'Otázka č. $i', predmet: predmet));
-      }
-    });
-    return list;
   }
 
   String _vypocitejOdpocet() {
@@ -111,10 +151,7 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
             icon: const Icon(Icons.settings),
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => NastaveniObrazovka(
-                onThemeToggle: widget.onThemeToggle, 
-                isDarkMode: widget.isDarkMode
-              )),
+              MaterialPageRoute(builder: (context) => NastaveniObrazovka(onThemeToggle: widget.onThemeToggle, isDarkMode: widget.isDarkMode)),
             ),
           )
         ],
@@ -124,7 +161,6 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
           padding: const EdgeInsets.all(20.0),
           child: Column(
             children: [
-              // --- KARTA S ODPOČTEM ---
               Card(
                 color: Theme.of(context).colorScheme.primaryContainer,
                 child: Padding(
@@ -133,11 +169,7 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
                     children: [
                       const Text("Čas do ústních maturit:", style: TextStyle(fontSize: 16)),
                       const SizedBox(height: 10),
-                      Text(
-                        _vypocitejOdpocet(),
-                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                        textAlign: TextAlign.center,
-                      ),
+                      Text(_vypocitejOdpocet(), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                       const SizedBox(height: 5),
                       const Text("25. 5. 2026", style: TextStyle(fontStyle: FontStyle.italic)),
                     ],
@@ -166,93 +198,80 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
           minimumSize: const Size(double.infinity, 60),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         ),
-        onPressed: () async {
-          await Navigator.push(context, MaterialPageRoute(builder: (context) => SeznamOtazekObrazovka(predmet: kod, vsechnyOtazky: vsechnyOtazky)));
-          setState(() {}); 
-        },
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => SeznamOtazekObrazovka(predmet: kod))),
         child: Text(nazev, style: const TextStyle(fontSize: 18)),
       ),
     );
   }
 }
 
-// --- OBRAZOVKA NASTAVENÍ ---
-class NastaveniObrazovka extends StatelessWidget {
-  final VoidCallback onThemeToggle;
-  final bool isDarkMode;
-
-  const NastaveniObrazovka({super.key, required this.onThemeToggle, required this.isDarkMode});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Nastavení")),
-      body: ListView(
-        children: [
-          SwitchListTile(
-            title: const Text("Tmavý režim"),
-            subtitle: const Text("Šetří oči při nočním učení"),
-            secondary: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
-            value: isDarkMode,
-            onChanged: (v) => onThemeToggle(),
-          ),
-          const Divider(),
-          const ListTile(
-            leading: Icon(Icons.info_outline),
-            title: Text("Verze aplikace"),
-            trailing: Text("1.0.0"),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // --- SEZNAM OTÁZEK ---
-class SeznamOtazekObrazovka extends StatefulWidget {
+class SeznamOtazekObrazovka extends StatelessWidget {
   final String predmet;
-  final List<Otazka> vsechnyOtazky;
-  const SeznamOtazekObrazovka({super.key, required this.predmet, required this.vsechnyOtazky});
+  const SeznamOtazekObrazovka({super.key, required this.predmet});
 
-  @override
-  State<SeznamOtazekObrazovka> createState() => _SeznamOtazekObrazovkaState();
-}
-
-class _SeznamOtazekObrazovkaState extends State<SeznamOtazekObrazovka> {
   @override
   Widget build(BuildContext context) {
-    final filtrovane = widget.vsechnyOtazky.where((o) => o.predmet == widget.predmet).toList();
     return Scaffold(
-      appBar: AppBar(title: Text('Otázky: ${widget.predmet}')),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.separated(
-              itemCount: filtrovane.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final o = filtrovane[index];
-                return ListTile(
-                  leading: CircleAvatar(child: Text('${o.cislo}')),
-                  title: Text(o.nazev, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: LinearProgressIndicator(
-                    value: o.progres / 100.0,
-                    color: o.progres > 70 ? Colors.green : (o.progres > 30 ? Colors.orange : Colors.red),
-                  ),
-                  trailing: Text('${o.progres}%'),
-                  onTap: () async {
-                    await Navigator.push(context, MaterialPageRoute(builder: (context) => EditorObrazovka(otazka: o)));
-                    setState(() {});
+      appBar: AppBar(title: Text('Otázky: $predmet')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('otazky')
+            .where('predmet', isEqualTo: predmet)
+            .orderBy('cislo')
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          final docs = snapshot.data!.docs;
+          
+          return Column(
+            children: [
+              Expanded(
+                child: ListView.builder(
+                  itemCount: 25,
+                  itemBuilder: (context, index) {
+                    int cislo = index + 1;
+                    Otazka otazka;
+                    var existingDoc = docs.where((d) => d['cislo'] == cislo);
+                    if (existingDoc.isNotEmpty) {
+                      otazka = Otazka.fromFirestore(existingDoc.first);
+                    } else {
+                      otazka = Otazka(id: '$predmet-$cislo', cislo: cislo, nazev: 'Otázka č. $cislo', predmet: predmet);
+                    }
+
+                    return ListTile(
+                      leading: CircleAvatar(child: Text('${otazka.cislo}')),
+                      title: Text(otazka.nazev, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 4),
+                          LinearProgressIndicator(
+                            value: otazka.progres / 100.0,
+                            color: otazka.progres > 70 ? Colors.green : (otazka.progres > 30 ? Colors.orange : Colors.red),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            otazka.posledniUprava != null 
+                              ? "Naposledy upraveno: ${otazka.posledniUprava!.day}. ${otazka.posledniUprava!.month}. ${otazka.posledniUprava!.year}"
+                              : "Zatím neotevřeno",
+                            style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic),
+                          ),
+                        ],
+                      ),
+                      trailing: Text('${otazka.progres}%'),
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => EditorObrazovka(otazka: otazka))),
+                    );
                   },
-                );
-              },
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: FilledButton(onPressed: () => Navigator.pop(context), child: const Text("Zpět do menu")),
-          )
-        ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: FilledButton(onPressed: () => Navigator.pop(context), child: const Text("Zpět do menu")),
+              )
+            ],
+          );
+        },
       ),
     );
   }
@@ -282,26 +301,73 @@ class _EditorObrazovkaState extends State<EditorObrazovka> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Otázka č. ${widget.otazka.cislo}')),
+      appBar: AppBar(title: Text('Úprava: ${widget.otazka.cislo}')),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           children: [
             TextField(controller: _nazevCtrl, decoration: const InputDecoration(labelText: "Název")),
             const SizedBox(height: 15),
-            TextField(controller: _popisCtrl, decoration: const InputDecoration(labelText: "Poznámky"), maxLines: 3),
+            TextField(controller: _popisCtrl, decoration: const InputDecoration(labelText: "Poznámky"), maxLines: 5),
             const SizedBox(height: 25),
-            Text("Naučeno: ${_progres.round()}%"),
+            Text("Naučeno: ${_progres.round()}%", style: const TextStyle(fontWeight: FontWeight.bold)),
             Slider(value: _progres, min: 0, max: 100, divisions: 20, onChanged: (v) => setState(() => _progres = v)),
             const Spacer(),
-            SizedBox(width: double.infinity, child: FilledButton(onPressed: () {
-              widget.otazka.nazev = _nazevCtrl.text;
-              widget.otazka.popis = _popisCtrl.text;
-              widget.otazka.progres = _progres.round();
-              Navigator.pop(context);
-            }, child: const Text("Uložit"))),
+            SizedBox(
+              width: double.infinity, 
+              child: FilledButton(
+                onPressed: () async {
+                  await FirebaseFirestore.instance.collection('otazky').doc(widget.otazka.id).set({
+                    'cislo': widget.otazka.cislo,
+                    'nazev': _nazevCtrl.text,
+                    'popis': _popisCtrl.text,
+                    'progres': _progres.round(),
+                    'predmet': widget.otazka.predmet,
+                    'lastUpdate': FieldValue.serverTimestamp(), // TADY SE UKLÁDÁ ČAS
+                  });
+                  if (mounted) Navigator.pop(context);
+                }, 
+                child: const Text("Uložit do cloudu")
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// --- NASTAVENÍ ---
+class NastaveniObrazovka extends StatelessWidget {
+  final VoidCallback onThemeToggle;
+  final bool isDarkMode;
+  const NastaveniObrazovka({super.key, required this.onThemeToggle, required this.isDarkMode});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Nastavení")),
+      body: ListView(
+        children: [
+          SwitchListTile(
+            title: const Text("Tmavý režim"),
+            subtitle: const Text("Šetří oči při nočním učení"),
+            secondary: Icon(isDarkMode ? Icons.dark_mode : Icons.light_mode),
+            value: isDarkMode,
+            onChanged: (v) => onThemeToggle(),
+          ),
+          const Divider(),
+          const ListTile(
+            leading: Icon(Icons.cloud_done_outlined),
+            title: Text("Cloud synchronizace"),
+            trailing: Icon(Icons.check, color: Colors.green),
+          ),
+          const ListTile(
+            leading: Icon(Icons.info_outline),
+            title: Text("Verze aplikace"),
+            trailing: Text("1.2.0"),
+          ),
+        ],
       ),
     );
   }
