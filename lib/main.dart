@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:url_launcher/url_launcher.dart'; // NOVÝ IMPORT
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,7 +30,9 @@ class Otazka {
   String popis;
   int progres; 
   String predmet;
-  DateTime? posledniUprava; // NOVÉ POLE
+  DateTime? posledniUprava;
+  DateTime? naplanovanoNa;
+  String odkaz; // NOVÉ POLE
 
   Otazka({
     required this.id,
@@ -39,6 +42,8 @@ class Otazka {
     this.progres = 0, 
     required this.predmet,
     this.posledniUprava,
+    this.naplanovanoNa,
+    this.odkaz = '', // VÝCHOZÍ HODNOTA
   });
 
   factory Otazka.fromFirestore(DocumentSnapshot doc) {
@@ -50,7 +55,9 @@ class Otazka {
       popis: data['popis'] ?? '',
       progres: data['progres'] ?? 0,
       predmet: data['predmet'] ?? '',
-      posledniUprava: (data['lastUpdate'] as Timestamp?)?.toDate(), // PŘEVOD Z FIREBASE
+      posledniUprava: (data['lastUpdate'] as Timestamp?)?.toDate(),
+      naplanovanoNa: (data['planDate'] as Timestamp?)?.toDate(),
+      odkaz: data['odkaz'] ?? '', // NAČTENÍ Z FIREBASE
     );
   }
 }
@@ -176,6 +183,17 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
                   ),
                 ),
               ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 50),
+                  backgroundColor: Colors.amber.shade700,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const KalendarObrazovka())),
+                icon: const Icon(Icons.calendar_month),
+                label: const Text("Můj studijní plán", style: TextStyle(fontSize: 16)),
+              ),
               const SizedBox(height: 30),
               const Text("Předměty:", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               const SizedBox(height: 15),
@@ -205,71 +223,117 @@ class _MenuObrazovkaState extends State<MenuObrazovka> {
   }
 }
 
-// --- SEZNAM OTÁZEK ---
+// --- KALENDÁŘ OBRAZOVKA ---
+class KalendarObrazovka extends StatefulWidget {
+  const KalendarObrazovka({super.key});
+
+  @override
+  State<KalendarObrazovka> createState() => _KalendarObrazovkaState();
+}
+
+class _KalendarObrazovkaState extends State<KalendarObrazovka> {
+  DateTime _selectedDay = DateTime.now();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Studijní plán")),
+      body: Column(
+        children: [
+          CalendarDatePicker(
+            initialDate: _selectedDay,
+            firstDate: DateTime(2024),
+            lastDate: DateTime(2027),
+            onDateChanged: (date) {
+              setState(() => _selectedDay = date);
+            },
+          ),
+          const Divider(),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance.collection('otazky').snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                
+                var naplanovaneOtazky = snapshot.data!.docs.map((d) => Otazka.fromFirestore(d)).where((o) {
+                  return o.naplanovanoNa != null &&
+                      o.naplanovanoNa!.day == _selectedDay.day &&
+                      o.naplanovanoNa!.month == _selectedDay.month &&
+                      o.naplanovanoNa!.year == _selectedDay.year;
+                }).toList();
+
+                if (naplanovaneOtazky.isEmpty) {
+                  return const Center(child: Text("Na tento den nemáš nic naplánováno."));
+                }
+
+                return ListView.builder(
+                  itemCount: naplanovaneOtazky.length,
+                  itemBuilder: (context, index) {
+                    final o = naplanovaneOtazky[index];
+                    return ListTile(
+                      leading: Icon(Icons.book, color: Theme.of(context).primaryColor),
+                      title: Text("${o.predmet}: ${o.nazev}"),
+                      subtitle: Text("Progres: ${o.progres}%"),
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => EditorObrazovka(otazka: o))),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// --- SEZNAM OTÁZEK (OPRAVENÝ) ---
 class SeznamOtazekObrazovka extends StatelessWidget {
   final String predmet;
   const SeznamOtazekObrazovka({super.key, required this.predmet});
 
   @override
   Widget build(BuildContext context) {
+    int max = predmet == 'IT' ? 25 : 20;
     return Scaffold(
-      appBar: AppBar(title: Text('Otázky: $predmet')),
+      appBar: AppBar(title: Text(predmet)),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('otazky')
-            .where('predmet', isEqualTo: predmet)
-            .orderBy('cislo')
-            .snapshots(),
+        stream: FirebaseFirestore.instance.collection('otazky').where('predmet', isEqualTo: predmet).orderBy('cislo').snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
           final docs = snapshot.data!.docs;
-          
-          return Column(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  itemCount: 25,
-                  itemBuilder: (context, index) {
-                    int cislo = index + 1;
-                    Otazka otazka;
-                    var existingDoc = docs.where((d) => d['cislo'] == cislo);
-                    if (existingDoc.isNotEmpty) {
-                      otazka = Otazka.fromFirestore(existingDoc.first);
-                    } else {
-                      otazka = Otazka(id: '$predmet-$cislo', cislo: cislo, nazev: 'Otázka č. $cislo', predmet: predmet);
-                    }
-
-                    return ListTile(
-                      leading: CircleAvatar(child: Text('${otazka.cislo}')),
-                      title: Text(otazka.nazev, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 4),
-                          LinearProgressIndicator(
-                            value: otazka.progres / 100.0,
-                            color: otazka.progres > 70 ? Colors.green : (otazka.progres > 30 ? Colors.orange : Colors.red),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            otazka.posledniUprava != null 
-                              ? "Naposledy upraveno: ${otazka.posledniUprava!.day}. ${otazka.posledniUprava!.month}. ${otazka.posledniUprava!.year}"
-                              : "Zatím neotevřeno",
-                            style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic),
-                          ),
-                        ],
-                      ),
-                      trailing: Text('${otazka.progres}%'),
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => EditorObrazovka(otazka: otazka))),
-                    );
-                  },
+          return ListView.builder(
+            itemCount: max,
+            itemBuilder: (context, index) {
+              int c = index + 1;
+              var d = docs.where((doc) => doc['cislo'] == c);
+              Otazka o = d.isNotEmpty ? Otazka.fromFirestore(d.first) : Otazka(id: '$predmet-$c', cislo: c, nazev: 'Otázka č. $c', predmet: predmet);
+              
+              return ListTile(
+                leading: CircleAvatar(child: Text('$c')),
+                title: Row(
+                  children: [
+                    Expanded(child: Text(o.nazev, style: const TextStyle(fontWeight: FontWeight.bold))),
+                    // IKONA ODKAZU SE TEĎ UKÁŽE VEDLE NÁZVU
+                    if (o.odkaz.isNotEmpty) 
+                      const Icon(Icons.link, size: 18, color: Colors.blueAccent),
+                  ],
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: FilledButton(onPressed: () => Navigator.pop(context), child: const Text("Zpět do menu")),
-              )
-            ],
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 4),
+                    LinearProgressIndicator(
+                      value: o.progres / 100, 
+                      color: o.progres > 70 ? Colors.green : Colors.orange
+                    ),
+                  ],
+                ),
+                // PROCENTA JSOU ZPĚT NA SVÉM MÍSTĚ VPRAVO
+                trailing: Text('${o.progres}%', style: const TextStyle(fontWeight: FontWeight.bold)),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => EditorObrazovka(otazka: o))),
+              );
+            },
           );
         },
       ),
@@ -288,31 +352,105 @@ class EditorObrazovka extends StatefulWidget {
 class _EditorObrazovkaState extends State<EditorObrazovka> {
   late TextEditingController _nazevCtrl;
   late TextEditingController _popisCtrl;
+  late TextEditingController _odkazCtrl; // NOVÝ CONTROLLER
   late double _progres;
+  DateTime? _selectedDate;
 
   @override
   void initState() {
     super.initState();
     _nazevCtrl = TextEditingController(text: widget.otazka.nazev);
     _popisCtrl = TextEditingController(text: widget.otazka.popis);
+    _odkazCtrl = TextEditingController(text: widget.otazka.odkaz); // NAČTENÍ ODKAZU
     _progres = widget.otazka.progres.toDouble();
+    _selectedDate = widget.otazka.naplanovanoNa;
+  }
+
+  Future<void> _pickDate() async {
+    DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate ?? DateTime.now(),
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime(2027),
+    );
+    if (picked != null) {
+      setState(() => _selectedDate = picked);
+    }
+  }
+
+  // FUNKCE NA OTEVŘENÍ ODKAZU
+  // AGRESIVNÍ OTEVÍRÁNÍ ODKAZU (Bez čekání na systém)
+  void _launchOnlineDoc() {
+    final String urlText = _odkazCtrl.text.trim();
+    if (urlText.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Vlož odkaz!")));
+      return;
+    }
+
+    // Odstraníme zbytečné await a zkusíme přímé volání
+    try {
+      String finalUrl = urlText;
+      if (!finalUrl.startsWith('http')) {
+        finalUrl = 'https://$finalUrl';
+      }
+
+      final Uri url = Uri.parse(finalUrl);
+
+      // Tady je ta změna: Použijeme LaunchMode.externalNonBrowserApplication 
+      // nebo prostě vynecháme složité ověřování
+      launchUrl(
+        url, 
+        mode: LaunchMode.externalApplication,
+      );
+      
+      // Okamžitá zpětná vazba uživateli, aby věděl, že se něco děje
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Otevírám prohlížeč..."), duration: Duration(seconds: 1)),
+      );
+    } catch (e) {
+      // Pokud i tohle selže, vypíšeme chybu do konzole místo zamrznutí UI
+      print("Chyba při otevírání: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Úprava: ${widget.otazka.cislo}')),
-      body: Padding(
+      appBar: AppBar(title: Text('Otázka: ${widget.otazka.cislo}')),
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           children: [
             TextField(controller: _nazevCtrl, decoration: const InputDecoration(labelText: "Název")),
             const SizedBox(height: 15),
-            TextField(controller: _popisCtrl, decoration: const InputDecoration(labelText: "Poznámky"), maxLines: 5),
-            const SizedBox(height: 25),
+            TextField(controller: _popisCtrl, decoration: const InputDecoration(labelText: "Poznámky"), maxLines: 3),
+            const SizedBox(height: 15),
+            // POLE PRO ODKAZ
+            TextField(
+              controller: _odkazCtrl, 
+              decoration: const InputDecoration(labelText: "Online odkaz (Google Dokumenty)", hintText: "https://docs.google.com/...")
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              onPressed: _launchOnlineDoc,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text("Otevřít materiály online"),
+              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 45)),
+            ),
+            const SizedBox(height: 20),
+            ListTile(
+              tileColor: Theme.of(context).colorScheme.surfaceVariant,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              leading: const Icon(Icons.calendar_today),
+              title: const Text("Naplánovat učení"),
+              subtitle: Text(_selectedDate == null ? "Nezvoleno" : "${_selectedDate!.day}. ${_selectedDate!.month}. ${_selectedDate!.year}"),
+              onTap: _pickDate,
+              trailing: _selectedDate != null ? IconButton(icon: const Icon(Icons.clear), onPressed: () => setState(() => _selectedDate = null)) : null,
+            ),
+            const SizedBox(height: 20),
             Text("Naučeno: ${_progres.round()}%", style: const TextStyle(fontWeight: FontWeight.bold)),
             Slider(value: _progres, min: 0, max: 100, divisions: 20, onChanged: (v) => setState(() => _progres = v)),
-            const Spacer(),
+            const SizedBox(height: 20),
             SizedBox(
               width: double.infinity, 
               child: FilledButton(
@@ -321,9 +459,11 @@ class _EditorObrazovkaState extends State<EditorObrazovka> {
                     'cislo': widget.otazka.cislo,
                     'nazev': _nazevCtrl.text,
                     'popis': _popisCtrl.text,
+                    'odkaz': _odkazCtrl.text, // ULOŽENÍ ODKAZU
                     'progres': _progres.round(),
                     'predmet': widget.otazka.predmet,
-                    'lastUpdate': FieldValue.serverTimestamp(), // TADY SE UKLÁDÁ ČAS
+                    'lastUpdate': FieldValue.serverTimestamp(),
+                    'planDate': _selectedDate,
                   });
                   if (mounted) Navigator.pop(context);
                 }, 
@@ -358,14 +498,9 @@ class NastaveniObrazovka extends StatelessWidget {
           ),
           const Divider(),
           const ListTile(
-            leading: Icon(Icons.cloud_done_outlined),
-            title: Text("Cloud synchronizace"),
-            trailing: Icon(Icons.check, color: Colors.green),
-          ),
-          const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text("Verze aplikace"),
-            trailing: Text("1.2.0"),
+            trailing: Text("1.4.0"),
           ),
         ],
       ),
